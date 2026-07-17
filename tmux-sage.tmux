@@ -48,7 +48,9 @@ daemon)
 	tmux set-option -g @sage_pid "$!"
 	;;
 hook)
-	tmux set-hook -g after-select-window "run-shell -b '$BIN -once $ARGS >>$LOG 2>&1'"
+	# session-window-changed fires on any current-window change
+	# (select-window, next-window, previous-window, last-window, ...)
+	tmux set-hook -g session-window-changed "run-shell -b '$BIN -once $ARGS >>$LOG 2>&1'"
 	;;
 off) ;;
 *)

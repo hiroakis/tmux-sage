@@ -73,11 +73,13 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 **Daemon mode (default, recommended).** A background process polls every window on an interval, so names stay fresh even for windows you are *not* looking at — a build that finished or a long-running agent that completed in a background tab is reflected in its name. Idle windows cost nothing: unchanged content is skipped by hash comparison before any API call.
 
-**Hook mode.** No resident process; a one-shot pass runs each time you switch windows. Because per-window state (content hash, last-call time) is persisted as tmux window options, debouncing works correctly across invocations. The trade-off: names of background windows only update when you interact with tmux. Enable it via TPM (`set -g @sage_mode 'hook'`) or manually:
+**Hook mode.** No resident process; a one-shot pass runs each time the current window changes. Because per-window state (content hash, last-call time) is persisted as tmux window options, debouncing works correctly across invocations. The trade-off: names of background windows only update when you interact with tmux. Enable it via TPM (`set -g @sage_mode 'hook'`) or manually:
 
 ```tmux
-set-hook -g after-select-window "run-shell -b 'tmux-sage -once >>/tmp/tmux-sage.log 2>&1'"
+set-hook -g session-window-changed "run-shell -b 'tmux-sage -once >>/tmp/tmux-sage.log 2>&1'"
 ```
+
+> **Note:** TPM's installer (`prefix + I`) only downloads plugins. The hook is registered when the plugin script runs — reload your config afterwards with `tmux source-file ~/.tmux.conf`.
 
 You can also run `tmux-sage -once` from cron or any other trigger — every invocation is safe and cheap thanks to the persisted state.
 
