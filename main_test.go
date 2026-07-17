@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -165,6 +166,38 @@ func TestChangeRatio(t *testing.T) {
 	}
 	if r := changeRatio("", ""); r != 0 {
 		t.Errorf("empty content: ratio = %v, want 0", r)
+	}
+}
+
+func TestAcquireLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.lock")
+
+	first, err := acquireLock(path)
+	if err != nil {
+		t.Fatalf("first acquireLock failed: %v", err)
+	}
+	if _, err := acquireLock(path); err == nil {
+		t.Fatal("second acquireLock should fail while the first lock is held")
+	}
+	first.Close()
+	third, err := acquireLock(path)
+	if err != nil {
+		t.Fatalf("acquireLock after release failed: %v", err)
+	}
+	third.Close()
+}
+
+func TestContentSize(t *testing.T) {
+	w := window{panes: []pane{
+		{content: "  hello  "},
+		{content: ""},
+		{content: "world"},
+	}}
+	if got := contentSize(w); got != 10 {
+		t.Errorf("contentSize = %d, want 10 (trimmed)", got)
+	}
+	if got := contentSize(window{}); got != 0 {
+		t.Errorf("contentSize of empty window = %d, want 0", got)
 	}
 }
 

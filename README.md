@@ -97,6 +97,7 @@ You can also run `tmux-sage -once` from cron or any other trigger — every invo
 | `-redact` | `true` | Mask likely secrets (API keys, tokens, `Authorization:` headers) in pane contents before sending them to the LLM |
 | `-change-threshold` | `0.1` | Fraction of changed lines required to re-summarize (0 = any change). Filters spinner/clock-only updates from TUI apps |
 | `-max-cost-per-day` | `0` | Stop calling the API after this USD spend in a calendar day (0 = unlimited). Resets at local midnight; tracked in-memory per process |
+| `-min-content` | `100` | Skip windows whose total pane content is smaller than this many bytes (e.g. an empty shell prompt) |
 | `-dry-run` | `false` | Print labels without renaming windows |
 | `-once` | `false` | Run a single pass and exit |
 | `-verbose` | `false` | Also log per-window skip decisions (no change / debounced) |
@@ -148,5 +149,6 @@ Distribution:
 ## Notes
 
 - Pane contents are sent to the Anthropic API for summarization. Likely secrets are masked by default (`-redact`), but this is best-effort pattern matching — set `@sage_off` on windows whose panes may display sensitive material.
+- Only one tmux-sage instance runs per user (enforced with a lock file) — concurrent hook invocations or a daemon + hook combination won't double-summarize.
 - Automatically renamed windows have tmux's `automatic-rename` turned off (same behavior as a manual rename).
 - Each successful LLM call is logged with its token usage and cost, plus running totals. Prices per model are hardcoded in `pricePerMTok()` — update it if pricing changes.

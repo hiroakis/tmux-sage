@@ -9,9 +9,11 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -29,6 +31,7 @@ type config struct {
 	redact          bool
 	changeThreshold float64
 	maxCostPerDay   float64
+	minContent      int
 	dryRun          bool
 	once            bool
 	verbose         bool
@@ -106,6 +109,7 @@ func main() {
 	flag.BoolVar(&cfg.redact, "redact", true, "mask likely secrets (API keys, tokens, Authorization headers) in pane contents before sending them to the LLM")
 	flag.Float64Var(&cfg.changeThreshold, "change-threshold", 0.1, "fraction of changed lines required to re-summarize (0 = any change); filters spinner/clock-only updates")
 	flag.Float64Var(&cfg.maxCostPerDay, "max-cost-per-day", 0, "stop calling the API after this USD spend in a calendar day (0 = unlimited)")
+	flag.IntVar(&cfg.minContent, "min-content", 100, "skip windows whose total pane content is smaller than this many bytes (e.g. an empty shell prompt)")
 	flag.BoolVar(&cfg.dryRun, "dry-run", false, "print labels without renaming windows")
 	flag.BoolVar(&cfg.once, "once", false, "run a single pass and exit")
 	flag.BoolVar(&cfg.verbose, "verbose", false, "log per-window skip decisions (no change / debounced)")
@@ -114,6 +118,18 @@ func main() {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		log.Fatal("tmux not found in PATH")
 	}
+
+	// single-instance lock: hook mode can fire concurrently on rapid window
+	// switches, and each racing process would summarize (and pay for) the
+	// same windows before the persisted state is written.
+	lockPath := filepath.Join(os.TempDir(), fmt.Sprintf("tmux-sage-%d.lock", os.Getuid()))
+	lock, err := acquireLock(lockPath)
+	if err != nil {
+		log.Printf("another tmux-sage instance is already running (lock: %s); exiting", lockPath)
+		return
+	}
+	defer lock.Close()
+
 	if os.Getenv("ANTHROPIC_API_KEY") == "" {
 		log.Println("warning: ANTHROPIC_API_KEY is not set; API calls will fail unless another credential source is configured")
 	}
@@ -160,8 +176,40 @@ func runPass(cfg config, client *anthropic.Client, states map[string]*windowStat
 	return nil
 }
 
+// acquireLock takes an exclusive advisory lock so only one tmux-sage instance
+// runs per user. The lock is released automatically when the process exits.
+func acquireLock(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// contentSize returns the total size of all panes' trimmed content.
+func contentSize(w window) int {
+	total := 0
+	for _, p := range w.panes {
+		total += len(strings.TrimSpace(p.content))
+	}
+	return total
+}
+
 func processWindow(cfg config, client *anthropic.Client, states map[string]*windowState, st *stats, w window) {
 	if optOut(w.id) {
+		return
+	}
+
+	// a window with almost no content (e.g. a fresh shell prompt) has nothing
+	// meaningful to summarize; the LLM would produce a garbage label
+	if size := contentSize(w); size < cfg.minContent {
+		if cfg.verbose {
+			log.Printf("window %s (%s): content too small (%d bytes < %d), skipped", w.id, w.name, size, cfg.minContent)
+		}
 		return
 	}
 
