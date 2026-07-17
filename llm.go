@@ -112,16 +112,34 @@ func newLLMClient(cfg *llmConfig) (llmClient, error) {
 	}
 }
 
+// builtinPrices maps model-name substrings to USD prices per 1M input/output
+// tokens. Matched in order, so more specific names must come before their
+// prefixes (gpt-4o-mini before gpt-4o). Prices as of July 2026 — they change;
+// override with -price-in / -price-out when they do.
+var builtinPrices = []struct {
+	substr  string
+	in, out float64
+}{
+	// Anthropic (per tier)
+	{"haiku", 1.0, 5.0},
+	{"sonnet", 3.0, 15.0},
+	{"opus", 5.0, 25.0},
+	// OpenAI
+	{"gpt-4o-mini", 0.15, 0.60},
+	{"gpt-4o", 2.50, 10.00},
+	// Google
+	{"gemini-2.5-flash-lite", 0.10, 0.40},
+	{"gemini-2.5-flash", 0.30, 2.50},
+	{"gemini-2.5-pro", 1.25, 10.00},
+}
+
 // pricePerMTok returns input/output prices in USD per 1M tokens.
 // Returns ok=false for unknown models (cost is then logged as unknown).
 func pricePerMTok(model string) (in, out float64, ok bool) {
-	switch {
-	case strings.Contains(model, "haiku"):
-		return 1.0, 5.0, true
-	case strings.Contains(model, "sonnet"):
-		return 3.0, 15.0, true
-	case strings.Contains(model, "opus"):
-		return 5.0, 25.0, true
+	for _, p := range builtinPrices {
+		if strings.Contains(model, p.substr) {
+			return p.in, p.out, true
+		}
 	}
 	return 0, 0, false
 }

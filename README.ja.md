@@ -128,7 +128,7 @@ tmux-sage -provider vertex -vertex-project my-project -model gemini-2.5-flash-li
 tmux-sage -provider openai -base-url http://localhost:11434/v1 -model qwen2.5:7b
 ```
 
-コストログの単価は Claude モデルのみ組み込みです。それ以外のモデルは `-price-in` / `-price-out`（USD per 1M トークン）を指定するか、指定しなければ `cost=unknown` と表示されます。
+コストログの単価は、Claude 各ティア（haiku/sonnet/opus）、`gpt-4o` / `gpt-4o-mini`、`gemini-2.5` ファミリーを組み込みで持っています（**2026年7月時点の価格**。`llm.go` の `builtinPrices` 参照）。それ以外のモデルや価格改定時は `-price-in` / `-price-out`（USD per 1M トークン）で指定してください。未指定なら `cost=unknown` と表示されます。
 
 ## choose-window に長い説明を表示する
 
@@ -180,4 +180,4 @@ tmux set-option -w @sage_off 1
 - ペインの画面内容は要約のために Anthropic API へ送信されます。秘匿情報らしき文字列はデフォルトでマスクされますが（`-redact`）、パターンマッチによるベストエフォートです。機密情報が表示されうるペインを持つウィンドウには `@sage_off` を設定してください。
 - tmux-sage はユーザーごとに1インスタンスしか動きません（ロックファイルで制御）。フックの同時多発やデーモン + フックの併用でも二重要約は起きません。
 - 自動リネームされたウィンドウは tmux の `automatic-rename` がオフになります（手動リネームと同じ挙動です）。
-- LLM 呼び出しが成功するたびに、トークン使用量とコスト、累計をログに出力します。モデルごとの単価は `pricePerMTok()` にハードコードされています。価格が変わった場合は更新してください。
+- LLM 呼び出しが成功するたびに、トークン使用量とコスト、累計をログに出力します。組み込みの単価（`llm.go` の `builtinPrices`）は 2026年7月時点のスナップショットです。価格がずれたら `-price-in` / `-price-out` で上書きしてください。

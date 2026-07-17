@@ -128,7 +128,7 @@ tmux-sage -provider vertex -vertex-project my-project -model gemini-2.5-flash-li
 tmux-sage -provider openai -base-url http://localhost:11434/v1 -model qwen2.5:7b
 ```
 
-Cost logging knows Claude model prices out of the box; for other models pass `-price-in` / `-price-out` (USD per 1M tokens) or the log shows `cost=unknown`.
+Cost logging has built-in prices for Claude tiers (haiku/sonnet/opus), `gpt-4o` / `gpt-4o-mini`, and the `gemini-2.5` family (**prices as of July 2026** — see `builtinPrices` in `llm.go`). For other models, or when prices change, pass `-price-in` / `-price-out` (USD per 1M tokens); otherwise the log shows `cost=unknown`.
 
 ## Showing the longer description in choose-window
 
@@ -180,4 +180,4 @@ Distribution:
 - Pane contents are sent to the Anthropic API for summarization. Likely secrets are masked by default (`-redact`), but this is best-effort pattern matching — set `@sage_off` on windows whose panes may display sensitive material.
 - Only one tmux-sage instance runs per user (enforced with a lock file) — concurrent hook invocations or a daemon + hook combination won't double-summarize.
 - Automatically renamed windows have tmux's `automatic-rename` turned off (same behavior as a manual rename).
-- Each successful LLM call is logged with its token usage and cost, plus running totals. Prices per model are hardcoded in `pricePerMTok()` — update it if pricing changes.
+- Each successful LLM call is logged with its token usage and cost, plus running totals. Built-in model prices (`builtinPrices` in `llm.go`) are a snapshot as of July 2026 — override with `-price-in` / `-price-out` when they drift.

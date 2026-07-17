@@ -23,7 +23,12 @@ func TestPricePerMTok(t *testing.T) {
 		{"claude-haiku-4-5", 1.0, 5.0, true},
 		{"claude-sonnet-5", 3.0, 15.0, true},
 		{"claude-opus-4-8", 5.0, 25.0, true},
-		{"gpt-4o", 0, 0, false},
+		{"gpt-4o", 2.50, 10.00, true},
+		{"gpt-4o-mini", 0.15, 0.60, true}, // must not match the gpt-4o entry
+		{"gemini-2.5-flash", 0.30, 2.50, true},
+		{"gemini-2.5-flash-lite", 0.10, 0.40, true}, // must not match the flash entry
+		{"gemini-2.5-pro", 1.25, 10.00, true},
+		{"qwen2.5:7b", 0, 0, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {
