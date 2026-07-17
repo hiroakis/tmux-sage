@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -243,7 +244,7 @@ func TestSummarize(t *testing.T) {
 		{id: "%1", command: "go", path: "/src/tmuxtab", content: "go test ./..."},
 	}}
 
-	label, desc, err := summarize(cfg, client, st, w.id, windowContent(w))
+	label, desc, err := summarize(cfg, &anthropicLLM{client: client}, st, w.id, windowContent(w))
 	if err != nil {
 		t.Fatalf("summarize returned error: %v", err)
 	}
@@ -271,7 +272,7 @@ func TestSummarizeSingleLineResponse(t *testing.T) {
 	st := &stats{}
 	w := window{id: "@1", panes: []pane{{id: "%1"}}}
 
-	label, desc, err := summarize(cfg, client, st, w.id, windowContent(w))
+	label, desc, err := summarize(cfg, &anthropicLLM{client: client}, st, w.id, windowContent(w))
 	if err != nil {
 		t.Fatalf("summarize returned error: %v", err)
 	}
@@ -289,7 +290,7 @@ func TestSummarizeTruncatesLongOutput(t *testing.T) {
 	st := &stats{}
 	w := window{id: "@1", panes: []pane{{id: "%1"}}}
 
-	label, desc, err := summarize(cfg, client, st, w.id, windowContent(w))
+	label, desc, err := summarize(cfg, &anthropicLLM{client: client}, st, w.id, windowContent(w))
 	if err != nil {
 		t.Fatalf("summarize returned error: %v", err)
 	}
@@ -327,11 +328,87 @@ func TestSummarizeUsesConfiguredLanguage(t *testing.T) {
 	st := &stats{}
 	w := window{id: "@1", panes: []pane{{id: "%1"}}}
 
-	if _, _, err := summarize(cfg, &client, st, w.id, windowContent(w)); err != nil {
+	if _, _, err := summarize(cfg, &anthropicLLM{client: &client}, st, w.id, windowContent(w)); err != nil {
 		t.Fatalf("summarize returned error: %v", err)
 	}
 	if !strings.Contains(gotSystem, "Write both lines in Japanese.") {
 		t.Errorf("system prompt does not contain the language instruction; got: %q", gotSystem)
+	}
+}
+
+func TestOpenAILLM(t *testing.T) {
+	var gotAuth, gotSystem, gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		var body struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
+			gotModel = body.Model
+			for _, m := range body.Messages {
+				if m.Role == "system" {
+					gotSystem = m.Content
+				}
+			}
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		rw.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"local dev\nrunning tests against a local model"}}],
+			"usage":{"prompt_tokens":500,"completion_tokens":15}}`))
+	}))
+	defer srv.Close()
+
+	llm := &openaiLLM{baseURL: srv.URL, apiKey: "test-key", hc: srv.Client()}
+	cfg := config{model: "local-model", lang: "English", maxLabelLen: 20, maxDescLen: 60, priceIn: 1.0, priceOut: 5.0}
+	st := &stats{}
+
+	label, desc, err := summarize(cfg, llm, st, "@1", "## Pane 1\ngo test ./...")
+	if err != nil {
+		t.Fatalf("summarize returned error: %v", err)
+	}
+	if label != "local dev" {
+		t.Errorf("label = %q, want %q", label, "local dev")
+	}
+	if desc != "running tests against a local model" {
+		t.Errorf("desc = %q, want %q", desc, "running tests against a local model")
+	}
+	if gotAuth != "Bearer test-key" {
+		t.Errorf("Authorization = %q, want Bearer test-key", gotAuth)
+	}
+	if gotModel != "local-model" {
+		t.Errorf("model = %q, want local-model", gotModel)
+	}
+	if !strings.Contains(gotSystem, "Write both lines in English.") {
+		t.Errorf("system prompt missing language instruction: %q", gotSystem)
+	}
+	if st.inputTokens != 500 || st.outputTokens != 15 {
+		t.Errorf("stats tokens = %d/%d, want 500/15", st.inputTokens, st.outputTokens)
+	}
+	// -price-in/-price-out override applies for models without built-in prices
+	wantCost := 500.0/1e6*1.0 + 15.0/1e6*5.0
+	if diff := st.costUSD - wantCost; diff > 1e-12 || diff < -1e-12 {
+		t.Errorf("costUSD = %v, want %v", st.costUSD, wantCost)
+	}
+}
+
+func TestOpenAILLMError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.WriteHeader(http.StatusUnauthorized)
+		rw.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+	}))
+	defer srv.Close()
+
+	llm := &openaiLLM{baseURL: srv.URL, hc: srv.Client()}
+	if _, _, _, err := llm.complete(context.Background(), "m", "s", "u", 100); err == nil {
+		t.Fatal("complete should return an error on non-200 response")
+	} else if !strings.Contains(err.Error(), "invalid api key") {
+		t.Errorf("error should include response body, got: %v", err)
 	}
 }
 
@@ -351,7 +428,7 @@ func TestSummarizeAPIError(t *testing.T) {
 	st := &stats{}
 	w := window{id: "@1", panes: []pane{{id: "%1"}}}
 
-	if _, _, err := summarize(cfg, &client, st, w.id, windowContent(w)); err == nil {
+	if _, _, err := summarize(cfg, &anthropicLLM{client: &client}, st, w.id, windowContent(w)); err == nil {
 		t.Fatal("summarize should return an error on API failure")
 	}
 	if st.calls != 0 {

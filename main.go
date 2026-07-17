@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,8 +33,12 @@ type config struct {
 	captureLines    int
 	maxLabelLen     int
 	maxDescLen      int
+	provider        string
+	baseURL         string
 	model           string
 	lang            string
+	priceIn         float64
+	priceOut        float64
 	redact          bool
 	changeThreshold float64
 	maxCostPerDay   float64
@@ -107,8 +115,12 @@ func main() {
 	flag.IntVar(&cfg.captureLines, "lines", 30, "number of lines to capture from the bottom of each pane")
 	flag.IntVar(&cfg.maxLabelLen, "max-label-len", 20, "maximum label length in runes")
 	flag.IntVar(&cfg.maxDescLen, "max-desc-len", 60, "maximum description length in runes (stored in @sage_desc)")
-	flag.StringVar(&cfg.model, "model", "claude-haiku-4-5", "Anthropic model ID")
+	flag.StringVar(&cfg.provider, "provider", "anthropic", "LLM provider: anthropic | openai (openai works with any OpenAI-compatible API, e.g. Ollama)")
+	flag.StringVar(&cfg.baseURL, "base-url", "", "API base URL for -provider openai (default https://api.openai.com/v1; e.g. http://localhost:11434/v1 for Ollama)")
+	flag.StringVar(&cfg.model, "model", "", "model ID (default claude-haiku-4-5 for anthropic; required for openai)")
 	flag.StringVar(&cfg.lang, "lang", "English", "language for generated labels and descriptions (e.g. English, Japanese, ja, fr)")
+	flag.Float64Var(&cfg.priceIn, "price-in", 0, "input price in USD per 1M tokens for cost logging (overrides built-in prices)")
+	flag.Float64Var(&cfg.priceOut, "price-out", 0, "output price in USD per 1M tokens for cost logging (overrides built-in prices)")
 	flag.BoolVar(&cfg.redact, "redact", true, "mask likely secrets (API keys, tokens, Authorization headers) in pane contents before sending them to the LLM")
 	flag.Float64Var(&cfg.changeThreshold, "change-threshold", 0.1, "fraction of changed lines required to re-summarize (0 = any change); filters spinner/clock-only updates")
 	flag.Float64Var(&cfg.maxCostPerDay, "max-cost-per-day", 0, "stop calling the API after this USD spend in a calendar day (0 = unlimited)")
@@ -139,16 +151,16 @@ func main() {
 	}
 	defer lock.Close()
 
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		log.Println("warning: ANTHROPIC_API_KEY is not set; API calls will fail unless another credential source is configured")
+	llm, err := newLLMClient(&cfg)
+	if err != nil {
+		log.Fatal(err)
 	}
-	client := anthropic.NewClient()
 
 	states := map[string]*windowState{}
 	st := &stats{}
 	failures := 0
 	for {
-		if err := runPass(cfg, &client, states, st); err != nil {
+		if err := runPass(cfg, llm, states, st); err != nil {
 			log.Printf("pass failed: %v", err)
 			failures++
 			// exit when tmux is unreachable for a while (e.g. the server exited)
@@ -165,7 +177,38 @@ func main() {
 	}
 }
 
-func runPass(cfg config, client *anthropic.Client, states map[string]*windowState, st *stats) error {
+// newLLMClient builds the summarization backend for the configured provider,
+// applying provider-specific defaults to cfg.
+func newLLMClient(cfg *config) (llmClient, error) {
+	switch cfg.provider {
+	case "anthropic":
+		if cfg.model == "" {
+			cfg.model = "claude-haiku-4-5"
+		}
+		if os.Getenv("ANTHROPIC_API_KEY") == "" {
+			log.Println("warning: ANTHROPIC_API_KEY is not set; API calls will fail unless another credential source is configured")
+		}
+		c := anthropic.NewClient()
+		return &anthropicLLM{client: &c}, nil
+	case "openai":
+		if cfg.model == "" {
+			return nil, fmt.Errorf("-model is required with -provider openai (e.g. -model gpt-4o-mini)")
+		}
+		base := cfg.baseURL
+		if base == "" {
+			base = "https://api.openai.com/v1"
+		}
+		key := os.Getenv("OPENAI_API_KEY")
+		if key == "" && cfg.baseURL == "" {
+			log.Println("warning: OPENAI_API_KEY is not set; API calls will fail")
+		}
+		return &openaiLLM{baseURL: strings.TrimRight(base, "/"), apiKey: key, hc: &http.Client{}}, nil
+	default:
+		return nil, fmt.Errorf("unknown provider %q (anthropic | openai)", cfg.provider)
+	}
+}
+
+func runPass(cfg config, llm llmClient, states map[string]*windowState, st *stats) error {
 	windows, err := listWindows(cfg)
 	if err != nil {
 		return err
@@ -174,7 +217,7 @@ func runPass(cfg config, client *anthropic.Client, states map[string]*windowStat
 	alive := map[string]bool{}
 	for _, w := range windows {
 		alive[w.id] = true
-		processWindow(cfg, client, states, st, w)
+		processWindow(cfg, llm, states, st, w)
 	}
 	// drop state for closed windows
 	for id := range states {
@@ -208,7 +251,7 @@ func contentSize(w window) int {
 	return total
 }
 
-func processWindow(cfg config, client *anthropic.Client, states map[string]*windowState, st *stats, w window) {
+func processWindow(cfg config, llm llmClient, states map[string]*windowState, st *stats, w window) {
 	if optOut(w.id) {
 		return
 	}
@@ -264,7 +307,7 @@ func processWindow(cfg config, client *anthropic.Client, states map[string]*wind
 		}
 	}
 
-	label, desc, err := summarize(cfg, client, st, w.id, content)
+	label, desc, err := summarize(cfg, llm, st, w.id, content)
 	if err != nil {
 		log.Printf("window %s: summarize failed: %v", w.id, err)
 		return
@@ -449,7 +492,100 @@ func changeRatio(old, cur string) float64 {
 	return 1 - float64(matched)/float64(total)
 }
 
-func summarize(cfg config, client *anthropic.Client, st *stats, windowID, content string) (label, desc string, err error) {
+// llmClient is the summarization backend. complete sends one system+user
+// exchange and returns the response text with input/output token usage.
+type llmClient interface {
+	complete(ctx context.Context, model, system, user string, maxTokens int) (text string, inTok, outTok int64, err error)
+}
+
+type anthropicLLM struct {
+	client *anthropic.Client
+}
+
+func (a *anthropicLLM) complete(ctx context.Context, model, system, user string, maxTokens int) (string, int64, int64, error) {
+	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(model),
+		MaxTokens: int64(maxTokens),
+		System:    []anthropic.TextBlockParam{{Text: system}},
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(user)),
+		},
+	})
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("anthropic API: %w", err)
+	}
+	var text strings.Builder
+	for _, block := range resp.Content {
+		if t, ok := block.AsAny().(anthropic.TextBlock); ok {
+			text.WriteString(t.Text)
+		}
+	}
+	return text.String(), resp.Usage.InputTokens, resp.Usage.OutputTokens, nil
+}
+
+// openaiLLM talks to any OpenAI-compatible chat completions API (OpenAI
+// itself, Ollama, llama.cpp, LM Studio, vLLM, ...).
+type openaiLLM struct {
+	baseURL string
+	apiKey  string
+	hc      *http.Client
+}
+
+func (o *openaiLLM) complete(ctx context.Context, model, system, user string, maxTokens int) (string, int64, int64, error) {
+	payload, err := json.Marshal(map[string]any{
+		"model": model,
+		// max_tokens is the most widely supported field across
+		// OpenAI-compatible servers
+		"max_tokens": maxTokens,
+		"messages": []map[string]string{
+			{"role": "system", "content": system},
+			{"role": "user", "content": user},
+		},
+	})
+	if err != nil {
+		return "", 0, 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		return "", 0, 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if o.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+o.apiKey)
+	}
+	resp, err := o.hc.Do(req)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("openai API: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("openai API: read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", 0, 0, fmt.Errorf("openai API: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var parsed struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", 0, 0, fmt.Errorf("openai API: parse response: %w", err)
+	}
+	if len(parsed.Choices) == 0 {
+		return "", 0, 0, fmt.Errorf("openai API: response has no choices")
+	}
+	return parsed.Choices[0].Message.Content, parsed.Usage.PromptTokens, parsed.Usage.CompletionTokens, nil
+}
+
+func summarize(cfg config, llm llmClient, st *stats, windowID, content string) (label, desc string, err error) {
 	system := fmt.Sprintf(`The user message contains the on-screen contents of every pane in a single tmux window.
 Summarize the work being done in this window as a whole and output exactly two lines:
 
@@ -463,23 +599,19 @@ Rules:
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	resp, err := client.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     anthropic.Model(cfg.model),
-		MaxTokens: 300,
-		System:    []anthropic.TextBlockParam{{Text: system}},
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(content)),
-		},
-	})
+	text, in, out, err := llm.complete(ctx, cfg.model, system, content, 300)
 	if err != nil {
-		return "", "", fmt.Errorf("anthropic API: %w", err)
+		return "", "", err
 	}
 
-	in, out := resp.Usage.InputTokens, resp.Usage.OutputTokens
 	st.calls++
 	st.inputTokens += in
 	st.outputTokens += out
-	if pIn, pOut, ok := pricePerMTok(cfg.model); ok {
+	pIn, pOut, priced := pricePerMTok(cfg.model)
+	if cfg.priceIn > 0 || cfg.priceOut > 0 {
+		pIn, pOut, priced = cfg.priceIn, cfg.priceOut, true
+	}
+	if priced {
 		cost := float64(in)/1e6*pIn + float64(out)/1e6*pOut
 		st.costUSD += cost
 		st.rollDay(time.Now())
@@ -491,13 +623,7 @@ Rules:
 			windowID, cfg.model, in, out, st.calls, st.inputTokens, st.outputTokens)
 	}
 
-	var text strings.Builder
-	for _, block := range resp.Content {
-		if t, ok := block.AsAny().(anthropic.TextBlock); ok {
-			text.WriteString(t.Text)
-		}
-	}
-	lines := nonEmptyLines(text.String())
+	lines := nonEmptyLines(text)
 	if len(lines) > 0 {
 		label = sanitizeLabel(lines[0], cfg.maxLabelLen)
 	}

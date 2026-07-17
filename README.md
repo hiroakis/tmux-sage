@@ -17,7 +17,7 @@ Even for windows with multiple panes, tmux-sage collects the on-screen contents,
 ## Requirements
 
 - tmux
-- An Anthropic API key (`ANTHROPIC_API_KEY` environment variable)
+- An API key for your provider: `ANTHROPIC_API_KEY` (default), or `OPENAI_API_KEY` for `-provider openai`. Local LLMs via an OpenAI-compatible server need no key.
 
 ## Installation
 
@@ -92,7 +92,10 @@ You can also run `tmux-sage -once` from cron or any other trigger — every invo
 | `-lines` | `30` | Number of lines captured from the bottom of each pane |
 | `-max-label-len` | `20` | Maximum label length in characters |
 | `-max-desc-len` | `60` | Maximum description length (stored in `@sage_desc`) |
-| `-model` | `claude-haiku-4-5` | Anthropic model ID |
+| `-provider` | `anthropic` | LLM provider: `anthropic` or `openai` (the latter works with any OpenAI-compatible API) |
+| `-base-url` | | API base URL for `-provider openai` (default `https://api.openai.com/v1`) |
+| `-model` | `claude-haiku-4-5` | Model ID (required when `-provider openai`) |
+| `-price-in` / `-price-out` | `0` | USD per 1M input/output tokens for cost logging; overrides built-in prices (useful for OpenAI/local models) |
 | `-lang` | `English` | Language for generated labels and descriptions (e.g. `English`, `Japanese`, `ja`, `fr`) |
 | `-redact` | `true` | Mask likely secrets (API keys, tokens, `Authorization:` headers) in pane contents before sending them to the LLM |
 | `-change-threshold` | `0.1` | Fraction of changed lines required to re-summarize (0 = any change). Filters spinner/clock-only updates from TUI apps |
@@ -102,6 +105,21 @@ You can also run `tmux-sage -once` from cron or any other trigger — every invo
 | `-once` | `false` | Run a single pass and exit |
 | `-verbose` | `false` | Also log per-window skip decisions (no change / debounced) |
 | `-version` | | Print version and exit |
+
+## Using OpenAI or local LLMs
+
+`-provider openai` speaks the OpenAI chat completions API, which is also served by Ollama, llama.cpp, LM Studio, vLLM, and most other local LLM runtimes:
+
+```sh
+# OpenAI
+export OPENAI_API_KEY=sk-...
+tmux-sage -provider openai -model gpt-4o-mini
+
+# Ollama (no API key; pane contents never leave your machine)
+tmux-sage -provider openai -base-url http://localhost:11434/v1 -model qwen2.5:7b
+```
+
+Cost logging knows Claude model prices out of the box; for other models pass `-price-in` / `-price-out` (USD per 1M tokens) or the log shows `cost=unknown`.
 
 ## Showing the longer description in choose-window
 
@@ -127,7 +145,7 @@ To re-enable: `tmux set-option -wu @sage_off`.
 
 Provider support:
 
-- [ ] **Support providers other than Anthropic** — abstract the summarizer behind an interface and add an OpenAI-compatible backend (`-provider`, `-base-url` flags). An OpenAI-compatible endpoint covers OpenAI itself as well as **local LLMs** (Ollama, llama.cpp, LM Studio, vLLM), which also resolves the privacy concern of sending pane contents to an external API.
+- [x] **OpenAI-compatible backend** (`-provider openai`, `-base-url`) — covers OpenAI itself as well as local LLMs (Ollama, llama.cpp, LM Studio, vLLM)
 - [ ] Google Gemini backend
 - [ ] AWS Bedrock / Google Vertex AI backends (for teams that must stay inside their cloud)
 
