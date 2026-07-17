@@ -92,9 +92,11 @@ You can also run `tmux-sage -once` from cron or any other trigger — every invo
 | `-lines` | `30` | Number of lines captured from the bottom of each pane |
 | `-max-label-len` | `20` | Maximum label length in characters |
 | `-max-desc-len` | `60` | Maximum description length (stored in `@sage_desc`) |
-| `-provider` | `anthropic` | LLM provider: `anthropic`, `openai` (works with any OpenAI-compatible API), or `gemini` |
-| `-base-url` | | API base URL override for `-provider openai` / `gemini` |
-| `-model` | `claude-haiku-4-5` | Model ID (required when `-provider openai` / `gemini`) |
+| `-provider` | `anthropic` | LLM provider: `anthropic`, `openai` (works with any OpenAI-compatible API), `gemini`, or `vertex` |
+| `-base-url` | | API base URL override for `-provider openai` / `gemini` / `vertex` |
+| `-vertex-project` | `$GOOGLE_CLOUD_PROJECT` | GCP project ID for `-provider vertex` |
+| `-vertex-location` | `global` | GCP location for `-provider vertex` (e.g. `us-central1`, `asia-northeast1`) |
+| `-model` | `claude-haiku-4-5` | Model ID (required for providers other than `anthropic`) |
 | `-price-in` / `-price-out` | `0` | USD per 1M input/output tokens for cost logging; overrides built-in prices (useful for OpenAI/local models) |
 | `-lang` | `English` | Language for generated labels and descriptions (e.g. `English`, `Japanese`, `ja`, `fr`) |
 | `-redact` | `true` | Mask likely secrets (API keys, tokens, `Authorization:` headers) in pane contents before sending them to the LLM |
@@ -106,18 +108,21 @@ You can also run `tmux-sage -once` from cron or any other trigger — every invo
 | `-verbose` | `false` | Also log per-window skip decisions (no change / debounced) |
 | `-version` | | Print version and exit |
 
-## Using OpenAI, Gemini, or local LLMs
+## Using OpenAI, Gemini, Vertex AI, or local LLMs
 
-`-provider openai` speaks the OpenAI chat completions API, which is also served by Ollama, llama.cpp, LM Studio, vLLM, and most other local LLM runtimes. `-provider gemini` speaks the Gemini API (Google AI Studio; not Vertex AI, which uses GCP auth):
+`-provider openai` speaks the OpenAI chat completions API, which is also served by Ollama, llama.cpp, LM Studio, vLLM, and most other local LLM runtimes. `-provider gemini` speaks the Gemini API (Google AI Studio, API-key auth). `-provider vertex` runs Gemini models on Vertex AI with GCP Application Default Credentials:
 
 ```sh
 # OpenAI
 export OPENAI_API_KEY=sk-...
 tmux-sage -provider openai -model gpt-4o-mini
 
-# Gemini
+# Gemini (Google AI Studio)
 export GEMINI_API_KEY=...
 tmux-sage -provider gemini -model gemini-2.5-flash-lite
+
+# Vertex AI (uses ADC: gcloud auth application-default login)
+tmux-sage -provider vertex -vertex-project my-project -model gemini-2.5-flash-lite
 
 # Ollama (no API key; pane contents never leave your machine)
 tmux-sage -provider openai -base-url http://localhost:11434/v1 -model qwen2.5:7b
@@ -151,7 +156,8 @@ Provider support:
 
 - [x] **OpenAI-compatible backend** (`-provider openai`, `-base-url`) — covers OpenAI itself as well as local LLMs (Ollama, llama.cpp, LM Studio, vLLM)
 - [x] Google Gemini backend (`-provider gemini`; Gemini API with an API key)
-- [ ] AWS Bedrock / Google Vertex AI backends (for teams that must stay inside their cloud)
+- [x] Google Vertex AI backend (`-provider vertex`; Gemini models with GCP ADC auth)
+- [ ] AWS Bedrock backend (for teams that must stay inside AWS)
 
 Features:
 

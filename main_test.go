@@ -12,6 +12,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"golang.org/x/oauth2"
 )
 
 func TestSanitizeLabel(t *testing.T) {
@@ -444,6 +445,41 @@ func TestGeminiLLM(t *testing.T) {
 	// thinking tokens count as output tokens: 12 + 88
 	if st.inputTokens != 400 || st.outputTokens != 100 {
 		t.Errorf("stats tokens = %d/%d, want 400/100", st.inputTokens, st.outputTokens)
+	}
+}
+
+func TestVertexLLM(t *testing.T) {
+	var gotPath, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		rw.Header().Set("Content-Type", "application/json")
+		rw.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"vertex dev\ntesting the vertex backend"}]}}],
+			"usageMetadata":{"promptTokenCount":300,"candidatesTokenCount":10}}`))
+	}))
+	defer srv.Close()
+
+	llm := &vertexLLM{
+		modelURLPrefix: srv.URL + "/projects/my-proj/locations/global/publishers/google/models/",
+		ts:             oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "gcp-token"}),
+		hc:             srv.Client(),
+	}
+	text, in, out, err := llm.complete(context.Background(), "gemini-2.5-flash-lite", "sys", "user", 300)
+	if err != nil {
+		t.Fatalf("complete returned error: %v", err)
+	}
+	if text != "vertex dev\ntesting the vertex backend" {
+		t.Errorf("text = %q", text)
+	}
+	if in != 300 || out != 10 {
+		t.Errorf("tokens = %d/%d, want 300/10", in, out)
+	}
+	want := "/projects/my-proj/locations/global/publishers/google/models/gemini-2.5-flash-lite:generateContent"
+	if gotPath != want {
+		t.Errorf("path = %q, want %q", gotPath, want)
+	}
+	if gotAuth != "Bearer gcp-token" {
+		t.Errorf("Authorization = %q, want Bearer gcp-token", gotAuth)
 	}
 }
 

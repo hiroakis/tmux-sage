@@ -22,6 +22,8 @@ import (
 	"unicode"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 )
 
 // version is injected at release time via -ldflags "-X main.version=...".
@@ -35,6 +37,8 @@ type config struct {
 	maxDescLen      int
 	provider        string
 	baseURL         string
+	vertexProject   string
+	vertexLocation  string
 	model           string
 	lang            string
 	priceIn         float64
@@ -115,9 +119,11 @@ func main() {
 	flag.IntVar(&cfg.captureLines, "lines", 30, "number of lines to capture from the bottom of each pane")
 	flag.IntVar(&cfg.maxLabelLen, "max-label-len", 20, "maximum label length in runes")
 	flag.IntVar(&cfg.maxDescLen, "max-desc-len", 60, "maximum description length in runes (stored in @sage_desc)")
-	flag.StringVar(&cfg.provider, "provider", "anthropic", "LLM provider: anthropic | openai | gemini (openai works with any OpenAI-compatible API, e.g. Ollama)")
-	flag.StringVar(&cfg.baseURL, "base-url", "", "API base URL override for -provider openai / gemini (e.g. http://localhost:11434/v1 for Ollama)")
-	flag.StringVar(&cfg.model, "model", "", "model ID (default claude-haiku-4-5 for anthropic; required for openai / gemini)")
+	flag.StringVar(&cfg.provider, "provider", "anthropic", "LLM provider: anthropic | openai | gemini | vertex (openai works with any OpenAI-compatible API, e.g. Ollama)")
+	flag.StringVar(&cfg.baseURL, "base-url", "", "API base URL override for -provider openai / gemini / vertex (e.g. http://localhost:11434/v1 for Ollama)")
+	flag.StringVar(&cfg.vertexProject, "vertex-project", "", "GCP project ID for -provider vertex (default: GOOGLE_CLOUD_PROJECT env var)")
+	flag.StringVar(&cfg.vertexLocation, "vertex-location", "global", "GCP location for -provider vertex (e.g. global, us-central1, asia-northeast1)")
+	flag.StringVar(&cfg.model, "model", "", "model ID (default claude-haiku-4-5 for anthropic; required for openai / gemini / vertex)")
 	flag.StringVar(&cfg.lang, "lang", "English", "language for generated labels and descriptions (e.g. English, Japanese, ja, fr)")
 	flag.Float64Var(&cfg.priceIn, "price-in", 0, "input price in USD per 1M tokens for cost logging (overrides built-in prices)")
 	flag.Float64Var(&cfg.priceOut, "price-out", 0, "output price in USD per 1M tokens for cost logging (overrides built-in prices)")
@@ -219,8 +225,35 @@ func newLLMClient(cfg *config) (llmClient, error) {
 			log.Println("warning: GEMINI_API_KEY is not set; API calls will fail")
 		}
 		return &geminiLLM{baseURL: strings.TrimRight(base, "/"), apiKey: key, hc: &http.Client{}}, nil
+	case "vertex":
+		if cfg.model == "" {
+			return nil, fmt.Errorf("-model is required with -provider vertex (e.g. -model gemini-2.5-flash-lite)")
+		}
+		project := cfg.vertexProject
+		if project == "" {
+			project = os.Getenv("GOOGLE_CLOUD_PROJECT")
+		}
+		if project == "" {
+			return nil, fmt.Errorf("-vertex-project (or GOOGLE_CLOUD_PROJECT) is required with -provider vertex")
+		}
+		location := cfg.vertexLocation
+		base := cfg.baseURL
+		if base == "" {
+			host := "aiplatform.googleapis.com"
+			if location != "global" {
+				host = location + "-aiplatform.googleapis.com"
+			}
+			base = "https://" + host + "/v1"
+		}
+		ts, err := google.DefaultTokenSource(context.Background(), "https://www.googleapis.com/auth/cloud-platform")
+		if err != nil {
+			return nil, fmt.Errorf("vertex: no GCP credentials found (run `gcloud auth application-default login` or set GOOGLE_APPLICATION_CREDENTIALS): %w", err)
+		}
+		prefix := fmt.Sprintf("%s/projects/%s/locations/%s/publishers/google/models/",
+			strings.TrimRight(base, "/"), project, location)
+		return &vertexLLM{modelURLPrefix: prefix, ts: ts, hc: &http.Client{}}, nil
 	default:
-		return nil, fmt.Errorf("unknown provider %q (anthropic | openai | gemini)", cfg.provider)
+		return nil, fmt.Errorf("unknown provider %q (anthropic | openai | gemini | vertex)", cfg.provider)
 	}
 }
 
@@ -610,6 +643,35 @@ type geminiLLM struct {
 }
 
 func (g *geminiLLM) complete(ctx context.Context, model, system, user string, maxTokens int) (string, int64, int64, error) {
+	url := fmt.Sprintf("%s/models/%s:generateContent", g.baseURL, model)
+	return callGenerateContent(ctx, g.hc, url, func(req *http.Request) {
+		req.Header.Set("x-goog-api-key", g.apiKey)
+	}, system, user, maxTokens)
+}
+
+// vertexLLM talks to Gemini models on Vertex AI, authenticating with GCP
+// Application Default Credentials.
+type vertexLLM struct {
+	modelURLPrefix string // ".../projects/{p}/locations/{l}/publishers/google/models/"
+	ts             oauth2.TokenSource
+	hc             *http.Client
+}
+
+func (v *vertexLLM) complete(ctx context.Context, model, system, user string, maxTokens int) (string, int64, int64, error) {
+	tok, err := v.ts.Token()
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("vertex: get access token: %w", err)
+	}
+	url := v.modelURLPrefix + model + ":generateContent"
+	return callGenerateContent(ctx, v.hc, url, func(req *http.Request) {
+		req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	}, system, user, maxTokens)
+}
+
+// callGenerateContent sends a generateContent request (shared by the Gemini
+// API and Vertex AI, which speak the same schema behind different endpoints
+// and auth).
+func callGenerateContent(ctx context.Context, hc *http.Client, url string, setAuth func(*http.Request), system, user string, maxTokens int) (string, int64, int64, error) {
 	// Gemini 2.5 models spend output tokens on internal thinking before the
 	// visible answer; a tight cap can eat the whole budget and return no
 	// text, so give generous headroom over the requested maxTokens.
@@ -630,14 +692,13 @@ func (g *geminiLLM) complete(ctx context.Context, model, system, user string, ma
 	if err != nil {
 		return "", 0, 0, err
 	}
-	url := fmt.Sprintf("%s/models/%s:generateContent", g.baseURL, model)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return "", 0, 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-goog-api-key", g.apiKey)
-	resp, err := g.hc.Do(req)
+	setAuth(req)
+	resp, err := hc.Do(req)
 	if err != nil {
 		return "", 0, 0, fmt.Errorf("gemini API: %w", err)
 	}
