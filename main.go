@@ -20,6 +20,9 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 )
 
+// version is injected at release time via -ldflags "-X main.version=...".
+var version = "dev"
+
 type config struct {
 	interval        time.Duration
 	minAPIInterval  time.Duration
@@ -113,7 +116,13 @@ func main() {
 	flag.BoolVar(&cfg.dryRun, "dry-run", false, "print labels without renaming windows")
 	flag.BoolVar(&cfg.once, "once", false, "run a single pass and exit")
 	flag.BoolVar(&cfg.verbose, "verbose", false, "log per-window skip decisions (no change / debounced)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("tmux-sage %s\n", version)
+		return
+	}
 
 	if _, err := exec.LookPath("tmux"); err != nil {
 		log.Fatal("tmux not found in PATH")

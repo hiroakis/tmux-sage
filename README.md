@@ -101,6 +101,7 @@ You can also run `tmux-sage -once` from cron or any other trigger — every invo
 | `-dry-run` | `false` | Print labels without renaming windows |
 | `-once` | `false` | Run a single pass and exit |
 | `-verbose` | `false` | Also log per-window skip decisions (no change / debounced) |
+| `-version` | | Print version and exit |
 
 ## Showing the longer description in choose-window
 
