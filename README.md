@@ -6,6 +6,10 @@ A daemon that summarizes what you are working on in each tmux window (tab) using
 
 Even for windows with multiple panes, tmux-sage collects the on-screen contents, running commands, and working directories of **all** panes and summarizes them together — so you can tell what a tab is for just by looking at its name.
 
+## Demo
+
+https://github.com/user-attachments/assets/69f30ea5-9d9d-428a-a641-fceee40979c1
+
 ## How it works
 
 1. On a fixed interval, tmux-sage walks every window and captures the bottom N lines of each pane (`capture-pane`) plus pane metadata.
