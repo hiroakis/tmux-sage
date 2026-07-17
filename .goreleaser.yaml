@@ -1,0 +1,45 @@
+version: 2
+
+project_name: tmux-sage
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - formats: [tar.gz]
+    files:
+      - LICENSE
+      - README.md
+      - README.ja.md
+      - tmux-sage.tmux
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+
+homebrew_casks:
+  - repository:
+      owner: hiroakis
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/hiroakis/tmux-sage
+    description: Summarize what each tmux window is doing with an LLM and set it as the window name
+    # remove the macOS quarantine attribute from the unsigned binary
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/tmux-sage"]
+          end

@@ -21,6 +21,14 @@ Even for windows with multiple panes, tmux-sage collects the on-screen contents,
 
 ## Installation
 
+### Homebrew (macOS)
+
+```sh
+brew install --cask hiroakis/tap/tmux-sage
+```
+
+This installs the `tmux-sage` binary into your `PATH`, so the TPM plugin below picks it up automatically.
+
 ### With TPM (recommended)
 
 Add to `~/.tmux.conf`:
@@ -132,8 +140,8 @@ Features:
 Distribution:
 
 - [x] LICENSE file (MIT)
-- [ ] GitHub Actions CI (build, vet, test)
-- [ ] Prebuilt release binaries via goreleaser, Homebrew formula
+- [x] GitHub Actions CI (build, vet, test)
+- [x] Prebuilt release binaries via goreleaser, Homebrew tap (`hiroakis/tap/tmux-sage`)
 
 ## Notes
 
