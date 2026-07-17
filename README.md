@@ -1,0 +1,142 @@
+# tmux-sage
+
+English | [日本語](README.ja.md)
+
+A daemon that summarizes what you are working on in each tmux window (tab) using an LLM, and sets the summary as the window name automatically.
+
+Even for windows with multiple panes, tmux-sage collects the on-screen contents, running commands, and working directories of **all** panes and summarizes them together — so you can tell what a tab is for just by looking at its name.
+
+## How it works
+
+1. On a fixed interval, tmux-sage walks every window and captures the bottom N lines of each pane (`capture-pane`) plus pane metadata.
+2. If the content hash hasn't changed since the last summary, the window is skipped (no API call).
+3. If it changed, the Anthropic API (Claude Haiku 4.5 by default) generates a short label and a longer description.
+4. The label is applied with `tmux rename-window` (skipped when unchanged); the description is stored in the window's user option `@sage_desc`.
+5. State (content hash `@sage_hash`, last call time `@sage_last_call`) is also persisted as tmux window options — restarting tmux-sage does not re-summarize unchanged or recently summarized windows. Restarting the tmux server resets the state.
+
+## Requirements
+
+- tmux
+- An Anthropic API key (`ANTHROPIC_API_KEY` environment variable)
+
+## Installation
+
+### With TPM (recommended)
+
+Add to `~/.tmux.conf`:
+
+```tmux
+set -g @plugin 'hiroakis/tmux-sage'
+
+# optional configuration (defaults shown)
+set -g @sage_mode 'daemon'    # daemon | hook | off
+set -g @sage_args ''          # extra flags, e.g. '-lang Japanese -min-api-interval 300s'
+```
+
+Then press `prefix + I` to install. The plugin builds the binary with `go build` if Go is installed (otherwise set `@sage_bin` to a pre-built binary path, or put `tmux-sage` in your `PATH`).
+
+Make sure `ANTHROPIC_API_KEY` is visible to the tmux server — either start tmux from a shell that exports it, or set it explicitly:
+
+```sh
+tmux set-environment -g ANTHROPIC_API_KEY sk-ant-...
+```
+
+| Plugin option | Default | Description |
+|---|---|---|
+| `@sage_mode` | `daemon` | `daemon` runs tmux-sage in the background; `hook` summarizes on window switch only; `off` disables |
+| `@sage_args` | (empty) | Extra command-line flags passed to tmux-sage |
+| `@sage_bin` | auto-detect | Path to the tmux-sage binary (plugin dir → `PATH` → `go build`) |
+| `@sage_log` | `$TMPDIR/tmux-sage.log` | Daemon / hook log file |
+
+### Manual
+
+```sh
+go build -o tmux-sage .
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Try it first with dry-run (prints labels without renaming)
+./tmux-sage -once -dry-run
+
+# Run as a daemon
+./tmux-sage &
+```
+
+## Daemon vs hook mode
+
+**Daemon mode (default, recommended).** A background process polls every window on an interval, so names stay fresh even for windows you are *not* looking at — a build that finished or a long-running agent that completed in a background tab is reflected in its name. Idle windows cost nothing: unchanged content is skipped by hash comparison before any API call.
+
+**Hook mode.** No resident process; a one-shot pass runs each time you switch windows. Because per-window state (content hash, last-call time) is persisted as tmux window options, debouncing works correctly across invocations. The trade-off: names of background windows only update when you interact with tmux. Enable it via TPM (`set -g @sage_mode 'hook'`) or manually:
+
+```tmux
+set-hook -g after-select-window "run-shell -b 'tmux-sage -once >>/tmp/tmux-sage.log 2>&1'"
+```
+
+You can also run `tmux-sage -once` from cron or any other trigger — every invocation is safe and cheap thanks to the persisted state.
+
+## Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `-interval` | `30s` | Polling interval |
+| `-min-api-interval` | `180s` | Minimum interval between summarizations per window |
+| `-lines` | `30` | Number of lines captured from the bottom of each pane |
+| `-max-label-len` | `20` | Maximum label length in characters |
+| `-max-desc-len` | `60` | Maximum description length (stored in `@sage_desc`) |
+| `-model` | `claude-haiku-4-5` | Anthropic model ID |
+| `-lang` | `English` | Language for generated labels and descriptions (e.g. `English`, `Japanese`, `ja`, `fr`) |
+| `-redact` | `true` | Mask likely secrets (API keys, tokens, `Authorization:` headers) in pane contents before sending them to the LLM |
+| `-change-threshold` | `0.1` | Fraction of changed lines required to re-summarize (0 = any change). Filters spinner/clock-only updates from TUI apps |
+| `-max-cost-per-day` | `0` | Stop calling the API after this USD spend in a calendar day (0 = unlimited). Resets at local midnight; tracked in-memory per process |
+| `-dry-run` | `false` | Print labels without renaming windows |
+| `-once` | `false` | Run a single pass and exit |
+| `-verbose` | `false` | Also log per-window skip decisions (no change / debounced) |
+
+## Showing the longer description in choose-window
+
+tmux-sage stores a longer description of each window's activity in the `@sage_desc` window option. You can display it in the window list by customizing the choose-window (`choose-tree -w`) format. In `~/.tmux.conf`:
+
+```tmux
+bind Space choose-tree -w -F '#{window_name}#{window_flags} #{?#{!=:#{@sage_desc},},— #{@sage_desc},}'
+```
+
+If you also want to keep the active pane's title (shown by the default format), add `"#{pane_title}"` to the format string.
+
+## Excluding specific windows
+
+In the window you want to exclude:
+
+```sh
+tmux set-option -w @sage_off 1
+```
+
+To re-enable: `tmux set-option -wu @sage_off`.
+
+## Roadmap / TODO
+
+Provider support:
+
+- [ ] **Support providers other than Anthropic** — abstract the summarizer behind an interface and add an OpenAI-compatible backend (`-provider`, `-base-url` flags). An OpenAI-compatible endpoint covers OpenAI itself as well as **local LLMs** (Ollama, llama.cpp, LM Studio, vLLM), which also resolves the privacy concern of sending pane contents to an external API.
+- [ ] Google Gemini backend
+- [ ] AWS Bedrock / Google Vertex AI backends (for teams that must stay inside their cloud)
+
+Features:
+
+- [x] Redact obvious secrets (API keys, tokens, `Authorization:` headers) from pane contents before sending them to the LLM (`-redact`)
+- [x] Smarter change detection — ignore spinner/clock-only changes (`-change-threshold`)
+- [x] Daily cost budget (`-max-cost-per-day`): stop calling the API once the budget is exceeded
+- [ ] Persist the daily spend across restarts (currently in-memory per process)
+- [ ] Custom prompt template (`-prompt-file`) for tuning label style
+- [ ] Summarize session names as well, not just window names
+- [ ] Config file (`~/.config/tmux-sage/config.toml`) as an alternative to flags
+
+Distribution:
+
+- [x] LICENSE file (MIT)
+- [ ] GitHub Actions CI (build, vet, test)
+- [ ] Prebuilt release binaries via goreleaser, Homebrew formula
+
+## Notes
+
+- Pane contents are sent to the Anthropic API for summarization. Likely secrets are masked by default (`-redact`), but this is best-effort pattern matching — set `@sage_off` on windows whose panes may display sensitive material.
+- Automatically renamed windows have tmux's `automatic-rename` turned off (same behavior as a manual rename).
+- Each successful LLM call is logged with its token usage and cost, plus running totals. Prices per model are hardcoded in `pricePerMTok()` — update it if pricing changes.
