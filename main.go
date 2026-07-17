@@ -115,9 +115,9 @@ func main() {
 	flag.IntVar(&cfg.captureLines, "lines", 30, "number of lines to capture from the bottom of each pane")
 	flag.IntVar(&cfg.maxLabelLen, "max-label-len", 20, "maximum label length in runes")
 	flag.IntVar(&cfg.maxDescLen, "max-desc-len", 60, "maximum description length in runes (stored in @sage_desc)")
-	flag.StringVar(&cfg.provider, "provider", "anthropic", "LLM provider: anthropic | openai (openai works with any OpenAI-compatible API, e.g. Ollama)")
-	flag.StringVar(&cfg.baseURL, "base-url", "", "API base URL for -provider openai (default https://api.openai.com/v1; e.g. http://localhost:11434/v1 for Ollama)")
-	flag.StringVar(&cfg.model, "model", "", "model ID (default claude-haiku-4-5 for anthropic; required for openai)")
+	flag.StringVar(&cfg.provider, "provider", "anthropic", "LLM provider: anthropic | openai | gemini (openai works with any OpenAI-compatible API, e.g. Ollama)")
+	flag.StringVar(&cfg.baseURL, "base-url", "", "API base URL override for -provider openai / gemini (e.g. http://localhost:11434/v1 for Ollama)")
+	flag.StringVar(&cfg.model, "model", "", "model ID (default claude-haiku-4-5 for anthropic; required for openai / gemini)")
 	flag.StringVar(&cfg.lang, "lang", "English", "language for generated labels and descriptions (e.g. English, Japanese, ja, fr)")
 	flag.Float64Var(&cfg.priceIn, "price-in", 0, "input price in USD per 1M tokens for cost logging (overrides built-in prices)")
 	flag.Float64Var(&cfg.priceOut, "price-out", 0, "output price in USD per 1M tokens for cost logging (overrides built-in prices)")
@@ -203,8 +203,24 @@ func newLLMClient(cfg *config) (llmClient, error) {
 			log.Println("warning: OPENAI_API_KEY is not set; API calls will fail")
 		}
 		return &openaiLLM{baseURL: strings.TrimRight(base, "/"), apiKey: key, hc: &http.Client{}}, nil
+	case "gemini":
+		if cfg.model == "" {
+			return nil, fmt.Errorf("-model is required with -provider gemini (e.g. -model gemini-2.5-flash-lite)")
+		}
+		base := cfg.baseURL
+		if base == "" {
+			base = "https://generativelanguage.googleapis.com/v1beta"
+		}
+		key := os.Getenv("GEMINI_API_KEY")
+		if key == "" {
+			key = os.Getenv("GOOGLE_API_KEY")
+		}
+		if key == "" {
+			log.Println("warning: GEMINI_API_KEY is not set; API calls will fail")
+		}
+		return &geminiLLM{baseURL: strings.TrimRight(base, "/"), apiKey: key, hc: &http.Client{}}, nil
 	default:
-		return nil, fmt.Errorf("unknown provider %q (anthropic | openai)", cfg.provider)
+		return nil, fmt.Errorf("unknown provider %q (anthropic | openai | gemini)", cfg.provider)
 	}
 }
 
@@ -583,6 +599,83 @@ func (o *openaiLLM) complete(ctx context.Context, model, system, user string, ma
 		return "", 0, 0, fmt.Errorf("openai API: response has no choices")
 	}
 	return parsed.Choices[0].Message.Content, parsed.Usage.PromptTokens, parsed.Usage.CompletionTokens, nil
+}
+
+// geminiLLM talks to the Gemini API (Google AI Studio / Generative Language
+// API). Vertex AI uses different auth and endpoints and is not covered here.
+type geminiLLM struct {
+	baseURL string
+	apiKey  string
+	hc      *http.Client
+}
+
+func (g *geminiLLM) complete(ctx context.Context, model, system, user string, maxTokens int) (string, int64, int64, error) {
+	// Gemini 2.5 models spend output tokens on internal thinking before the
+	// visible answer; a tight cap can eat the whole budget and return no
+	// text, so give generous headroom over the requested maxTokens.
+	if maxTokens < 1024 {
+		maxTokens = 1024
+	}
+	payload, err := json.Marshal(map[string]any{
+		"system_instruction": map[string]any{
+			"parts": []map[string]string{{"text": system}},
+		},
+		"contents": []map[string]any{
+			{"role": "user", "parts": []map[string]string{{"text": user}}},
+		},
+		"generationConfig": map[string]any{
+			"maxOutputTokens": maxTokens,
+		},
+	})
+	if err != nil {
+		return "", 0, 0, err
+	}
+	url := fmt.Sprintf("%s/models/%s:generateContent", g.baseURL, model)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return "", 0, 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", g.apiKey)
+	resp, err := g.hc.Do(req)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("gemini API: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("gemini API: read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", 0, 0, fmt.Errorf("gemini API: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var parsed struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+		UsageMetadata struct {
+			PromptTokenCount     int64 `json:"promptTokenCount"`
+			CandidatesTokenCount int64 `json:"candidatesTokenCount"`
+			ThoughtsTokenCount   int64 `json:"thoughtsTokenCount"`
+		} `json:"usageMetadata"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", 0, 0, fmt.Errorf("gemini API: parse response: %w", err)
+	}
+	if len(parsed.Candidates) == 0 {
+		return "", 0, 0, fmt.Errorf("gemini API: response has no candidates")
+	}
+	var text strings.Builder
+	for _, p := range parsed.Candidates[0].Content.Parts {
+		text.WriteString(p.Text)
+	}
+	// thinking tokens are billed as output tokens
+	out := parsed.UsageMetadata.CandidatesTokenCount + parsed.UsageMetadata.ThoughtsTokenCount
+	return text.String(), parsed.UsageMetadata.PromptTokenCount, out, nil
 }
 
 func summarize(cfg config, llm llmClient, st *stats, windowID, content string) (label, desc string, err error) {

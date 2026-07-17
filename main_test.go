@@ -397,6 +397,56 @@ func TestOpenAILLM(t *testing.T) {
 	}
 }
 
+func TestGeminiLLM(t *testing.T) {
+	var gotPath, gotKey, gotSystem string
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotKey = r.Header.Get("x-goog-api-key")
+		var body struct {
+			SystemInstruction struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"system_instruction"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && len(body.SystemInstruction.Parts) > 0 {
+			gotSystem = body.SystemInstruction.Parts[0].Text
+		}
+		rw.Header().Set("Content-Type", "application/json")
+		rw.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"gemini dev\ntesting the gemini backend"}]}}],
+			"usageMetadata":{"promptTokenCount":400,"candidatesTokenCount":12,"thoughtsTokenCount":88}}`))
+	}))
+	defer srv.Close()
+
+	llm := &geminiLLM{baseURL: srv.URL, apiKey: "gem-key", hc: srv.Client()}
+	cfg := config{model: "gemini-2.5-flash-lite", lang: "English", maxLabelLen: 20, maxDescLen: 60}
+	st := &stats{}
+
+	label, desc, err := summarize(cfg, llm, st, "@1", "## Pane 1\ngo test ./...")
+	if err != nil {
+		t.Fatalf("summarize returned error: %v", err)
+	}
+	if label != "gemini dev" {
+		t.Errorf("label = %q, want %q", label, "gemini dev")
+	}
+	if desc != "testing the gemini backend" {
+		t.Errorf("desc = %q, want %q", desc, "testing the gemini backend")
+	}
+	if gotPath != "/models/gemini-2.5-flash-lite:generateContent" {
+		t.Errorf("path = %q, want /models/gemini-2.5-flash-lite:generateContent", gotPath)
+	}
+	if gotKey != "gem-key" {
+		t.Errorf("x-goog-api-key = %q, want gem-key", gotKey)
+	}
+	if !strings.Contains(gotSystem, "Write both lines in English.") {
+		t.Errorf("system instruction missing language directive: %q", gotSystem)
+	}
+	// thinking tokens count as output tokens: 12 + 88
+	if st.inputTokens != 400 || st.outputTokens != 100 {
+		t.Errorf("stats tokens = %d/%d, want 400/100", st.inputTokens, st.outputTokens)
+	}
+}
+
 func TestOpenAILLMError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rw.WriteHeader(http.StatusUnauthorized)

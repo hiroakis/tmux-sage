@@ -17,7 +17,7 @@ Even for windows with multiple panes, tmux-sage collects the on-screen contents,
 ## Requirements
 
 - tmux
-- An API key for your provider: `ANTHROPIC_API_KEY` (default), or `OPENAI_API_KEY` for `-provider openai`. Local LLMs via an OpenAI-compatible server need no key.
+- An API key for your provider: `ANTHROPIC_API_KEY` (default), `OPENAI_API_KEY` for `-provider openai`, or `GEMINI_API_KEY` for `-provider gemini`. Local LLMs via an OpenAI-compatible server need no key.
 
 ## Installation
 
@@ -92,9 +92,9 @@ You can also run `tmux-sage -once` from cron or any other trigger — every invo
 | `-lines` | `30` | Number of lines captured from the bottom of each pane |
 | `-max-label-len` | `20` | Maximum label length in characters |
 | `-max-desc-len` | `60` | Maximum description length (stored in `@sage_desc`) |
-| `-provider` | `anthropic` | LLM provider: `anthropic` or `openai` (the latter works with any OpenAI-compatible API) |
-| `-base-url` | | API base URL for `-provider openai` (default `https://api.openai.com/v1`) |
-| `-model` | `claude-haiku-4-5` | Model ID (required when `-provider openai`) |
+| `-provider` | `anthropic` | LLM provider: `anthropic`, `openai` (works with any OpenAI-compatible API), or `gemini` |
+| `-base-url` | | API base URL override for `-provider openai` / `gemini` |
+| `-model` | `claude-haiku-4-5` | Model ID (required when `-provider openai` / `gemini`) |
 | `-price-in` / `-price-out` | `0` | USD per 1M input/output tokens for cost logging; overrides built-in prices (useful for OpenAI/local models) |
 | `-lang` | `English` | Language for generated labels and descriptions (e.g. `English`, `Japanese`, `ja`, `fr`) |
 | `-redact` | `true` | Mask likely secrets (API keys, tokens, `Authorization:` headers) in pane contents before sending them to the LLM |
@@ -106,14 +106,18 @@ You can also run `tmux-sage -once` from cron or any other trigger — every invo
 | `-verbose` | `false` | Also log per-window skip decisions (no change / debounced) |
 | `-version` | | Print version and exit |
 
-## Using OpenAI or local LLMs
+## Using OpenAI, Gemini, or local LLMs
 
-`-provider openai` speaks the OpenAI chat completions API, which is also served by Ollama, llama.cpp, LM Studio, vLLM, and most other local LLM runtimes:
+`-provider openai` speaks the OpenAI chat completions API, which is also served by Ollama, llama.cpp, LM Studio, vLLM, and most other local LLM runtimes. `-provider gemini` speaks the Gemini API (Google AI Studio; not Vertex AI, which uses GCP auth):
 
 ```sh
 # OpenAI
 export OPENAI_API_KEY=sk-...
 tmux-sage -provider openai -model gpt-4o-mini
+
+# Gemini
+export GEMINI_API_KEY=...
+tmux-sage -provider gemini -model gemini-2.5-flash-lite
 
 # Ollama (no API key; pane contents never leave your machine)
 tmux-sage -provider openai -base-url http://localhost:11434/v1 -model qwen2.5:7b
@@ -146,7 +150,7 @@ To re-enable: `tmux set-option -wu @sage_off`.
 Provider support:
 
 - [x] **OpenAI-compatible backend** (`-provider openai`, `-base-url`) — covers OpenAI itself as well as local LLMs (Ollama, llama.cpp, LM Studio, vLLM)
-- [ ] Google Gemini backend
+- [x] Google Gemini backend (`-provider gemini`; Gemini API with an API key)
 - [ ] AWS Bedrock / Google Vertex AI backends (for teams that must stay inside their cloud)
 
 Features:
