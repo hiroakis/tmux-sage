@@ -150,31 +150,6 @@ tmux set-option -w @sage_off 1
 
 解除は `tmux set-option -wu @sage_off` です。
 
-## Roadmap / TODO
-
-プロバイダ対応:
-
-- [x] **OpenAI 互換バックエンド**（`-provider openai`、`-base-url`）— OpenAI 本体に加えてローカル LLM（Ollama、llama.cpp、LM Studio、vLLM）もカバー
-- [x] Google Gemini バックエンド（`-provider gemini`。API キー方式の Gemini API）
-- [x] Google Vertex AI バックエンド（`-provider vertex`。GCP ADC 認証で Gemini モデルを使用）
-- [ ] AWS Bedrock バックエンド（AWS 内に閉じる必要があるチーム向け）
-
-機能:
-
-- [x] LLM に送信する前にペイン内容から明らかな秘匿情報（API キー、トークン、`Authorization:` ヘッダ）をマスク（`-redact`）
-- [x] 変化検知の改善 — スピナーや時計表示だけの変化を無視（`-change-threshold`）
-- [x] 1日のコスト上限（`-max-cost-per-day`）— 予算超過で API 呼び出しを停止
-- [ ] 日次消費額の再起動をまたいだ永続化（現状はプロセス内メモリ管理）
-- [ ] プロンプトテンプレートのカスタマイズ（`-prompt-file`）
-- [ ] ウィンドウ名だけでなくセッション名の要約
-- [ ] フラグの代替としての設定ファイル（`~/.config/tmux-sage/config.toml`）
-
-配布:
-
-- [x] LICENSE ファイル（MIT）
-- [x] GitHub Actions CI（build、vet、test）
-- [x] goreleaser によるビルド済みバイナリ配布、Homebrew tap（`hiroakis/tap/tmux-sage`）
-
 ## 注意
 
 - ペインの画面内容は要約のために Anthropic API へ送信されます。秘匿情報らしき文字列はデフォルトでマスクされますが（`-redact`）、パターンマッチによるベストエフォートです。機密情報が表示されうるペインを持つウィンドウには `@sage_off` を設定してください。

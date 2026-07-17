@@ -150,31 +150,6 @@ tmux set-option -w @sage_off 1
 
 To re-enable: `tmux set-option -wu @sage_off`.
 
-## Roadmap / TODO
-
-Provider support:
-
-- [x] **OpenAI-compatible backend** (`-provider openai`, `-base-url`) — covers OpenAI itself as well as local LLMs (Ollama, llama.cpp, LM Studio, vLLM)
-- [x] Google Gemini backend (`-provider gemini`; Gemini API with an API key)
-- [x] Google Vertex AI backend (`-provider vertex`; Gemini models with GCP ADC auth)
-- [ ] AWS Bedrock backend (for teams that must stay inside AWS)
-
-Features:
-
-- [x] Redact obvious secrets (API keys, tokens, `Authorization:` headers) from pane contents before sending them to the LLM (`-redact`)
-- [x] Smarter change detection — ignore spinner/clock-only changes (`-change-threshold`)
-- [x] Daily cost budget (`-max-cost-per-day`): stop calling the API once the budget is exceeded
-- [ ] Persist the daily spend across restarts (currently in-memory per process)
-- [ ] Custom prompt template (`-prompt-file`) for tuning label style
-- [ ] Summarize session names as well, not just window names
-- [ ] Config file (`~/.config/tmux-sage/config.toml`) as an alternative to flags
-
-Distribution:
-
-- [x] LICENSE file (MIT)
-- [x] GitHub Actions CI (build, vet, test)
-- [x] Prebuilt release binaries via goreleaser, Homebrew tap (`hiroakis/tap/tmux-sage`)
-
 ## Notes
 
 - Pane contents are sent to the Anthropic API for summarization. Likely secrets are masked by default (`-redact`), but this is best-effort pattern matching — set `@sage_off` on windows whose panes may display sensitive material.
